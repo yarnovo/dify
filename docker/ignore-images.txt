@@ -1,0 +1,8 @@
+# Images to ignore when generating pull and push scripts
+# One image per line, supports wildcards (*)
+# Lines starting with # are comments
+
+# VastBase requires special access from https://www.vastdata.com.cn/
+vastdata/vastbase-vector
+
+# Add more images to ignore below as needed
