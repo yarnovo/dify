@@ -98,19 +98,71 @@ total=0
 success=0
 failed=0
 
-# Function to pull an image with error handling
+# Function to pull an image with error handling and digest fallback
 pull_image() {
     local image="\$1"
     local index="\$2"
     local total="\$3"
 
-    echo "[\$index/\$total] Pulling: \$image${PLATFORM_DESC}"
+    echo "[\$index/\$total] Processing: \$image"
 
-    if docker pull${PLATFORM_CMD} "\$image"; then
-        echo "✅ Successfully pulled: \$image"
-        ((success++))
+    # First, try to pull with --platform
+    echo "  → Attempting to pull with --platform linux/amd64..."
+    if docker pull --platform linux/amd64 "\$image"; then
+        # Check if we actually got AMD64
+        arch=\$(docker image inspect "\$image" --format '{{.Architecture}}' 2>/dev/null)
+
+        if [ "\$arch" = "amd64" ] || [ "\$arch" = "x86_64" ]; then
+            echo "  ✅ Successfully pulled AMD64 version"
+            ((success++))
+        else
+            echo "  ⚠️  Got \$arch instead of amd64, trying digest method..."
+
+            # Remove the wrong architecture version
+            docker rmi "\$image" --force 2>/dev/null || true
+
+            # Try to get AMD64 digest
+            echo "  → Getting AMD64 digest from manifest..."
+            amd64_digest=\$(docker manifest inspect "\$image" 2>/dev/null | jq -r '.manifests[] | select(.platform.architecture == "amd64") | .digest' | head -1)
+
+            if [ -n "\$amd64_digest" ] && [ "\$amd64_digest" != "null" ]; then
+                echo "  → Found digest: \$amd64_digest"
+
+                # Extract base image name without tag
+                if [[ "\$image" == *:* ]]; then
+                    base_image="\${image%:*}"
+                    tag="\${image#*:}"
+                else
+                    base_image="\$image"
+                    tag="latest"
+                fi
+
+                # Pull by digest
+                echo "  → Pulling by digest..."
+                if docker pull "\${base_image}@\${amd64_digest}"; then
+                    # Tag it properly
+                    docker tag "\${base_image}@\${amd64_digest}" "\$image"
+
+                    # Verify again
+                    arch=\$(docker image inspect "\$image" --format '{{.Architecture}}' 2>/dev/null)
+                    if [ "\$arch" = "amd64" ]; then
+                        echo "  ✅ Successfully pulled AMD64 version using digest"
+                        ((success++))
+                    else
+                        echo "  ❌ Still got \$arch architecture"
+                        ((failed++))
+                    fi
+                else
+                    echo "  ❌ Failed to pull by digest"
+                    ((failed++))
+                fi
+            else
+                echo "  ❌ Could not find AMD64 digest in manifest"
+                ((failed++))
+            fi
+        fi
     else
-        echo "❌ Failed to pull: \$image"
+        echo "  ❌ Failed to pull image"
         ((failed++))
     fi
     echo ""
